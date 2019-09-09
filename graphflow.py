@@ -21,6 +21,27 @@ def test_index_gen(time_stamp_threshhold = '2008-01-01 00:00:00-08:00',test_time
     test_date_index = random.sample(list(idx2time_stamp.keys())[time_stamp2idx[time_stamp_threshhold]:], k=test_time_num)
     return test_date_index,test_airport_index
 
+def wae_eval(pred_data,test_date_index,test_airport_index):
+    arr_sche = pd.read_csv("ArrTotalFlights.csv",index_col=0)
+    dep_sche = pd.read_csv("DepTotalFlights.csv",index_col=0)
+    DelayRatio = pd.read_csv("DelayRatio.csv",index_col=0)
+    p = DelayRatio.fillna(0).iloc[test_date_index, test_airport_index]
+    diff = p - pred_data
+    numerator = 0
+    denominator = 0
+        
+    for i in test_airport_index:
+    for j in test_date_index:
+    weight_wae = np.abs(arr_sche[str(i)].values[j]) + np.abs(arr_sche[str(i)].values[j])
+    numerator +=  np.abs(diff[str(i)].loc[j]) * weight_wae
+            
+    for i in test_airport_index:
+    for j in test_date_index:
+    denominator += (np.abs(arr_sche[str(i)].values[j]) + np.abs(arr_sche[str(i)].values[j]))
+            
+    wae = float(numerator/denominator)
+    return wae
+
 def model_evaluation(pred_data, test_date_index, test_airport_index):
     DelayRatio=pd.read_csv("DelayRatio.csv",index_col=0)
     
@@ -29,6 +50,9 @@ def model_evaluation(pred_data, test_date_index, test_airport_index):
     
     rmse_score = np.mean(mse(DelayRatio.fillna(0).iloc[test_date_index, test_airport_index],pred_data,axis=0))**0.5
     print ('rmse metric: ',rmse_score)
+    
+    wae_score = wae_eval(pred_data, test_date_index, test_airport_index)
+    print ('wae metric: ', wae_score)
     
     DelayFlights = pd.read_csv("ArrDelayFlights.csv",index_col=0)+pd.read_csv("DepDelayFlights.csv",index_col=0)
     TotalFlights = pd.read_csv("ArrTotalFlights.csv",index_col=0)+pd.read_csv("DepTotalFlights.csv",index_col=0)

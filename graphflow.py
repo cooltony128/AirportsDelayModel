@@ -31,13 +31,13 @@ def wae_eval(pred_data,test_date_index,test_airport_index):
     denominator = 0
         
     for i in test_airport_index:
-    for j in test_date_index:
-    weight_wae = np.abs(arr_sche[str(i)].values[j]) + np.abs(arr_sche[str(i)].values[j])
-    numerator +=  np.abs(diff[str(i)].loc[j]) * weight_wae
+        for j in test_date_index:
+            weight_wae = np.abs(arr_sche[str(i)].values[j]) + np.abs(arr_sche[str(i)].values[j])
+            numerator +=  np.abs(diff[str(i)].loc[j]) * weight_wae
             
     for i in test_airport_index:
-    for j in test_date_index:
-    denominator += (np.abs(arr_sche[str(i)].values[j]) + np.abs(arr_sche[str(i)].values[j]))
+        for j in test_date_index:
+            denominator += (np.abs(arr_sche[str(i)].values[j]) + np.abs(arr_sche[str(i)].values[j]))
             
     wae = float(numerator/denominator)
     return wae

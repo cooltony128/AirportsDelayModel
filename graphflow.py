@@ -4,6 +4,7 @@ import networkx as nx
 import matplotlib.pyplot as plt
 import random
 
+from math import sqrt
 from datetime import datetime,timedelta
 from pytz import timezone
 from time import time
@@ -20,6 +21,27 @@ def test_index_gen(time_stamp_threshhold = '2008-01-01 00:00:00-08:00',test_time
     test_airport_index = random.sample(idx2airport.keys(), k=test_airport_num)
     test_date_index = random.sample(list(idx2time_stamp.keys())[time_stamp2idx[time_stamp_threshhold]:], k=test_time_num)
     return test_date_index,test_airport_index
+
+def rwse_eval(pred_data, test_date_index, test_airport_index):
+    arr_sche = pd.read_csv("ArrTotalFlights.csv",index_col=0)
+    dep_sche = pd.read_csv("DepTotalFlights.csv",index_col=0)
+    DelayRatio = pd.read_csv("DelayRatio.csv",index_col=0)
+    p = DelayRatio.fillna(0).iloc[test_date_index, test_airport_index]
+    diff = p - pred_data
+    numerator = 0
+    denominator = 0
+    
+    for i in test_airport_index:
+        for j in test_date_index:
+            weight_wae = np.abs(arr_sche[str(i)].values[j]) + np.abs(arr_sche[str(i)].values[j])
+            numerator +=  (np.abs(diff[str(i)].loc[j])**2) * (weight_wae**2)
+            
+    for i in test_airport_index:
+        for j in test_date_index:
+            denominator += ((np.abs(arr_sche[str(i)].values[j]) + np.abs(arr_sche[str(i)].values[j])))**2
+            
+    rwse = float(sqrt(numerator/denominator))
+    return rwse
 
 def wae_eval(pred_data,test_date_index,test_airport_index):
     arr_sche = pd.read_csv("ArrTotalFlights.csv",index_col=0)
@@ -54,6 +76,9 @@ def model_evaluation(pred_data, test_date_index, test_airport_index):
     wae_score = wae_eval(pred_data, test_date_index, test_airport_index)
     print ('wae metric: ', wae_score)
     
+    rwse_score = rwse(pred_data, test_date_index, test_airport_index)
+    print ('rwse metric: ', rwse_score)
+
     DelayFlights = pd.read_csv("ArrDelayFlights.csv",index_col=0)+pd.read_csv("DepDelayFlights.csv",index_col=0)
     TotalFlights = pd.read_csv("ArrTotalFlights.csv",index_col=0)+pd.read_csv("DepTotalFlights.csv",index_col=0)
     

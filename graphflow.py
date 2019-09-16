@@ -3,15 +3,30 @@ import numpy as np
 import networkx as nx
 import matplotlib.pyplot as plt
 import random
+import keras
 
-from math import sqrt
+from keras.models import Sequential
+from keras.layers.core import Dense, Activation
+from keras.utils import np_utils
+
+from sklearn.model_selection import train_test_split
+from sklearn.linear_model import LogisticRegressionCV
+from sklearn.tree import DecisionTreeClassifier 
+from sklearn import metrics 
+
+from operator import attrgetter
 from datetime import datetime,timedelta
 from pytz import timezone
 from time import time
+from scipy import stats
+from scipy.ndimage.interpolation import shift
+from itertools import chain
 from collections import deque
 from IPython.display import clear_output
+from math import sqrt
 from statsmodels.tools.eval_measures import mse
 from statsmodels.tools.eval_measures import meanabs as mae
+
 
 def test_index_gen(time_stamp_threshhold = '2008-01-01 00:00:00-08:00',test_time_num = 1800, test_airport_num = 60):
     idx2airport=pd.read_csv("idx2airport.csv",index_col=0)['0'].to_dict()
@@ -323,7 +338,7 @@ class GraphFlow:
         #TODO
         return
     @classmethod
-    def import_GF(cls,dt):
+    def import_GF(cls,dt = timedelta(seconds=3600)):
         idx2airport=pd.read_csv("idx2airport.csv",index_col=0)['0'].to_dict()
         airport2idx={y:x for x,y in idx2airport.items()}
         idx2time_stamp=pd.to_datetime(pd.read_csv("idx2time_stamp.csv",index_col=0)['0'],utc = True).dt.tz_convert('America/Los_Angeles').to_dict()
@@ -473,3 +488,280 @@ def fun_1_counter(ts_raw_data,grid,dt):# covolution of delta)[t,t+dt) for t in g
         covolution.append(len(interval))
     print('counter finished :',time()-t)
     return pd.Series(covolution,index=grid)
+
+
+
+
+
+
+class StaticModel:
+    
+    def __init__(self,gf):
+        
+
+        self.gf = gf
+        self.data = gf.pre_data.set_index(pd.to_datetime(gf.pre_data.AbsCRSDepTime,utc = True)).sort_index().copy()
+        #display(self.data.head(1))
+        
+        
+
+        self.time_attrs = ['month','day','hour','minute','dayofweek','quarter','is_month_start','is_month_end','is_quarter_start','is_quarter_end']
+        self.airport_attrs =['weight','Distance']
+        self.delay_reasons = ['CarrierDelay', 'WeatherDelay', 'NASDelay', 'SecurityDelay', 'LateAircraftDelay','DepDelay','ArrDelay', ]
+
+        #config vectorize, layout
+        self.vectorize, self.layout = self.vectorize_gen(time_attrs = self.time_attrs,
+                                          airport_attrs = self.airport_attrs,
+                                          delay_reasons = self.delay_reasons)
+        # config models
+        self.models = pd.Series(data = [self.NN_model,self.LR_model,self.DT_model] , index =['NN_model','LR_model','DT_model'] )
+
+        # config sig_indexs
+        self.index_range = range(129,193)
+        self.sig_indexs = pd.Series(data =[[bool(num & (1<<n)) for n in range(8)] for num in self.index_range] ,index = self.index_range)
+        #display(self.sig_indexs.iloc[[0,-1]])
+    
+    def describe(self):
+        self.gf.describe()
+        display('time sig of fold 1: ',self.time_attrs)
+        display('airport sig of fold 2: ',self.airport_attrs)
+        display('delay_reasons : ',self.delay_reasons)
+        display('layout for sigs: ',self.layout)
+        display('models considered: ',self.models)
+        display('sig combinition considered: ',self.sig_indexs.iloc[[0,-1]])
+
+            
+
+    def fit(self,edges,pred_for_arrdelay = True, normalized = True, verbose = False):
+        
+        
+        t= time()
+        temp = self.data.groupby(['Origin','Dest']).filter(lambda x: x.name in edges)
+        print('sample_data is ready: ',time()-t)
+        self.df = temp.fillna(0).apply(self.vectorize,axis = 1)
+        print('sample_df is ready',time()-t)
+        display(self.df.head(1))
+
+        if len(self.df)<100:
+            print('data size too small')
+            raise
+            
+        edges_info = '_'.join(list(map(lambda x: x[0]+'2'+x[1],edges))[:5])
+        
+        name = ''
+        if pred_for_arrdelay:
+            name+='arrdelay'
+        else:
+            name+='depdelay'
+        if  normalized:
+            name+= '_normalized'
+        print('report_'+edges_info+'_'+name)
+
+        t= time()
+
+        res = self.report(models = self.models,
+                     sig_indexs = self.sig_indexs,
+                     layout =self.layout,
+                     total_df = self.df,
+                     pred_for_arrdelay = pred_for_arrdelay,
+                     normalized = normalized)
+        
+        if not verbose:
+            clear_output()
+            
+        print('total time: ',time()-t)
+        res.to_csv('report_'+edges_info+'_'+name+'.csv')
+        return res
+    
+    def predict(self, recordS):
+        pass
+        
+        
+    @staticmethod
+    def time_sig_fold_1_gen(time_attrs = [], prefix=''):
+        def time_sig_fold_1(time_index_str):
+            return pd.Series(data = attrgetter(*time_attrs)(pd.to_datetime(time_index_str)),
+                             index = map(lambda x: prefix+x,time_attrs ))
+        return time_sig_fold_1
+    @staticmethod
+    def time_sig_fold_2_gen(prefix = ''):
+        def time_sig_fold_2(time_1,time_2):
+            return pd.Series(data = (pd.to_datetime(time_2,utc = True)-pd.to_datetime(time_1,utc = True)).seconds//60,
+                             index = [prefix+'Diff'])
+        return time_sig_fold_2
+    @staticmethod
+    def airport_sig_fold_1_gen(gf , prefix=''):
+        def airport_sig_fold_1(airport):
+            return pd.Series(data = gf.airport2idx[airport],
+                             index = [prefix+'iata'])
+        return airport_sig_fold_1
+
+    @staticmethod
+    def airport_sig_fold_2_gen(gf, airport_attrs =['weight','Distance'], prefix=''):
+        def airport_sig_fold_2(origin,dest):
+            return pd.Series(data = [ gf.G.edges[(origin,dest)][x] for x in airport_attrs],
+                             index = map(lambda x: prefix+x,airport_attrs ))
+        return airport_sig_fold_2
+    @staticmethod
+    def delay_sig_gen( delay_reasons =[]):
+        def delay_sig(df):
+            return df[delay_reasons]
+        return delay_sig
+    @staticmethod
+    def is_delay_sig_gen():
+        def is_delay_sig(df):
+            return df[['DepDelay','ArrDelay']]>15
+        return is_delay_sig
+ 
+    def vectorize_gen(self,sig_index = [True]*6,time_attrs = None,time_attrs_fold_2 = None,airport_attrs = None,delay_reasons = None):
+        layout = []
+
+        time_sig_fold_1_dep = self.time_sig_fold_1_gen(time_attrs = time_attrs, prefix = 'dep')
+        layout.append(len(time_attrs))
+
+        time_sig_fold_1_arr = self.time_sig_fold_1_gen(time_attrs = time_attrs, prefix = 'arr')
+        layout.append(len(time_attrs))
+
+        time_sig_fold_2 = self.time_sig_fold_2_gen()
+        layout.append(1)
+
+        airport_sig_fold_1_dep = self.airport_sig_fold_1_gen(self.gf , prefix='dep')
+        layout.append(1)
+
+        airport_sig_fold_1_arr = self.airport_sig_fold_1_gen(self.gf , prefix='arr')
+        layout.append(1)
+
+        airport_sig_fold_2 = self.airport_sig_fold_2_gen(self.gf, airport_attrs = airport_attrs, prefix='')
+        layout.append(len(airport_attrs))
+
+        delay_sig = self.delay_sig_gen( delay_reasons = delay_reasons)
+        layout.append(len(delay_reasons))
+
+        is_delay_sig =self.is_delay_sig_gen()
+        layout.append(2)
+
+        def vectorize(df):
+            #print(df.shape)
+            return pd.concat(pd.Series (data = [time_sig_fold_1_dep(df.AbsCRSDepTime),
+                                                time_sig_fold_1_arr(df.AbsCRSArrTime),
+                                                time_sig_fold_2(df.AbsCRSDepTime,df.PreAbsArrTime),
+                                                airport_sig_fold_1_dep(df.Origin),
+                                                airport_sig_fold_1_arr(df.Dest),
+                                                airport_sig_fold_2(df.Origin,df.Dest),
+                                                delay_sig(df),
+                                                is_delay_sig(df)
+                                               ]).values)
+            return 
+        return vectorize, layout
+    
+    # Make one -hot encoder
+    @staticmethod
+    def one_hot_encode_object_array(arr):
+        uniques, ids = np.unique(arr, return_inverse=True)
+        return np_utils.to_categorical(ids, len(uniques))
+
+    @classmethod
+    def NN_model(cls,X,y):
+
+        # Create tain and test data
+        train_X, test_X, train_y, test_y = train_test_split(X, y, train_size=0.7, random_state=0)
+
+        train_y_ohe = cls.one_hot_encode_object_array(train_y)
+        test_y_ohe = cls.one_hot_encode_object_array(test_y)
+        
+        #print(train_X.shape, train_y_ohe.shape)
+        model = Sequential()
+        model.add(Dense(50, input_shape=(X.shape[1],)))
+        model.add(Activation('relu'))
+        model.add(Dense(30))
+        model.add(Activation('relu'))
+        model.add(Dense(test_y_ohe.shape[1]))
+        model.add(Activation('softmax'))
+        model.compile(loss='categorical_crossentropy', metrics=['accuracy'], optimizer='adam')
+
+        # Actual modelling
+
+        model.fit(train_X, train_y_ohe, verbose=0, batch_size=1)
+        score, accuracy = model.evaluate(test_X, test_y_ohe, batch_size=16, verbose=0)
+        accuracy = max(1-accuracy,accuracy)
+        print("Test fraction correct (NN-Score) = {:.2f}".format(score))
+        print("Test fraction correct (NN-Accuracy) = {:.2f}".format(accuracy))
+        return score, accuracy,model
+
+    @classmethod
+    def LR_model(cls,X,y):
+        # Create tain and test data
+        train_X, test_X, train_y, test_y = train_test_split(X, y, train_size=0.7, random_state=0)
+
+        train_y_ohe = cls.one_hot_encode_object_array(train_y)
+        test_y_ohe = cls.one_hot_encode_object_array(test_y)
+
+        model = Sequential()
+        model.add(Dense(test_y_ohe.shape[1], input_shape=(X.shape[1],)))
+        model.add(Activation('softmax'))
+        model.compile(loss='categorical_crossentropy', metrics=['accuracy'], optimizer='adam')
+
+        # Actual modelling
+        model.fit(train_X, train_y_ohe, verbose=0, batch_size=1)
+        score, accuracy = model.evaluate(test_X, test_y_ohe, batch_size=16, verbose=0)
+        accuracy = max(1-accuracy,accuracy)
+
+        print("Test fraction correct (LR-Score) = {:.2f}".format(score))
+        print("Test fraction correct (LR-Accuracy) = {:.2f}".format(accuracy))
+        return score, accuracy , model
+
+    @staticmethod
+    def DT_model(X,y):
+        X_train, X_test, y_train, y_test = train_test_split(X, y, train_size=0.7, random_state=1)
+
+        model = DecisionTreeClassifier()
+        model = model.fit(X_train,y_train)
+        y_pred = model.predict(X_test)
+        accuracy = metrics.accuracy_score(y_test, y_pred)
+        score = accuracy
+        print("Test fraction correct (DT-Score) = {:.2f}".format(score))
+        print("Test fraction correct (DT-Accuracy) = {:.2f}".format(accuracy))
+
+        return score, accuracy , model
+    
+    @staticmethod
+    def RF_model(X,y):
+        X_train, X_test, y_train, y_test = train_test_split(X, y, train_size=0.7, random_state=1)
+
+        model = DecisionTreeClassifier()
+        model = model.fit(X_train,y_train)
+        y_pred = model.predict(X_test)
+        accuracy = metrics.accuracy_score(y_test, y_pred)
+        score = accuracy
+        print("Test fraction correct (RF-Score) = {:.2f}".format(score))
+        print("Test fraction correct (RF-Accuracy) = {:.2f}".format(accuracy))
+
+        return score, accuracy , model
+    
+    @staticmethod
+    def report(models, sig_indexs, layout,total_df,pred_for_arrdelay = True, normalized = False): 
+    
+        if pred_for_arrdelay:
+            pred = -1
+        else:
+            pred = -2
+
+        data = np.full((len(models),len(sig_indexs)),0.)
+        for r, model in enumerate(models.values):
+            for c, sig_index in enumerate(sig_indexs.values):
+                new_layout = np.array(layout)[sig_index]
+                col_index = list(chain.from_iterable(np.array([(range(x,y)) for x,y in zip(np.cumsum(shift(layout,1,cval = 0)),
+                                                                               np.cumsum(layout))]
+                                                 )[sig_index]))
+                print('r: ',r,'c: ',c,'col_index ',col_index)
+                array = total_df.iloc[:,col_index].values.astype(int)
+                X = array[:, 0:-2]
+                if normalized:
+                    X = np.nan_to_num(stats.zscore(X,axis = 0))
+
+                y = array[:, pred]
+                data[r,c] = model(X,y)[1]
+        return pd.DataFrame(data = data, index = models.index, columns = sig_indexs.index)
+
+
+

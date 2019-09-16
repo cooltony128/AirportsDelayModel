@@ -1,5 +1,11 @@
 pre_data.csv
 
 ReadMe.ipynb
+Reason model.ipynb
+StaticModel.ipynb
+report_*
+test.py
 prediction_rnn_test_ratio_new.csv
 .ipynb_checkpoints/
+archived report/
+__pycache__/

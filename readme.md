@@ -1,7 +1,8 @@
-﻿
-# GraphFlow
+﻿# GraphFlow
 
-A visualization module based on neworkx and pandas
+A visualization and analysis module based on neworkx and pandas
+
+check [here](https://github.com/jyguo1729/AirportsDelayModel/blob/master/Demo.ipynb) for demos.
 
 ## Getting Started
 
